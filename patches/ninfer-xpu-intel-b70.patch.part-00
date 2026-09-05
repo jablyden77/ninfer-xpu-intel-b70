@@ -1,0 +1,899 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 98ac0bbd..7ab7d5b6 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1,5 +1,25 @@
+ cmake_minimum_required(VERSION 3.28)
+ 
++set(NINFER_BACKEND "CUDA" CACHE STRING "NInfer backend: CUDA or XPU")
++set_property(CACHE NINFER_BACKEND PROPERTY STRINGS CUDA XPU)
++
++if(NINFER_BACKEND STREQUAL "XPU")
++  project(ninfer LANGUAGES C CXX)
++  set(CMAKE_CXX_STANDARD 20)
++  set(CMAKE_CXX_STANDARD_REQUIRED ON)
++  set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
++  if(NOT CMAKE_CXX_COMPILER_ID MATCHES "IntelLLVM")
++    message(FATAL_ERROR "XPU backend requires Intel oneAPI icpx; got ${CMAKE_CXX_COMPILER_ID}")
++  endif()
++  add_subdirectory(src/xpu)
++  return()
++endif()
++
++if(NOT NINFER_BACKEND STREQUAL "CUDA")
++  message(FATAL_ERROR "Unsupported NINFER_BACKEND='${NINFER_BACKEND}'")
++endif()
++
++
+ # The current implementation is compiled only for sm_120a. Set and validate the
+ # architecture before CUDA compiler detection so CMake never injects a generic
+ # host-toolchain default or accepts an unsupported target.
+diff --git a/src/core/tensor.h b/src/core/tensor.h
+index 9b180a9b..bd321dd3 100644
+--- a/src/core/tensor.h
++++ b/src/core/tensor.h
+@@ -37,6 +37,8 @@ enum class QType : std::uint16_t {
+     I32_CTRL             = 6,
+     NVFP4                = 7,
+     FP8_E4M3FN_ROW_BF16S = 8,
++    GPTQ4_G128           = 9,
++    GPTQ4_G128_ROW       = 10,
+ };
+ 
+ enum class QuantLayout : std::uint16_t {
+@@ -58,6 +60,7 @@ struct Weight {
+ 
+     const void* qdata          = nullptr;
+     const void* qhigh          = nullptr;
++    const void* qzeros         = nullptr;
+     const void* scales         = nullptr;
+     std::int32_t n             = 0;
+     std::int32_t k             = 0;
+diff --git a/src/xpu/CMakeLists.txt b/src/xpu/CMakeLists.txt
+new file mode 100644
+index 00000000..51cf1293
+--- /dev/null
++++ b/src/xpu/CMakeLists.txt
+@@ -0,0 +1,124 @@
++find_package(OpenCL REQUIRED)
++
++add_library(ninfer_xpu_core STATIC
++  device_xpu.cpp
++  artifact_xpu.cpp
++  arena_xpu.cpp
++  ops_xpu.cpp
++  endpoints_xpu.cpp
++  rmsnorm_xpu.cpp
++  rope_xpu.cpp
++  causal_conv1d_xpu.cpp
++  gdn_input_proj_xpu.cpp
++  attn_input_proj_xpu.cpp
++  attention_decode_xpu.cpp
++  gdn_gating_xpu.cpp
++  gated_delta_net_xpu.cpp
++  q4_linear_xpu.cpp
++  w8_linear_xpu.cpp
++  gptq4_g128_xpu.cpp
++  ../core/dtype.cpp
++  ../core/tensor.cpp)
++
++target_include_directories(ninfer_xpu_core PUBLIC
++  ${PROJECT_SOURCE_DIR}/src/xpu
++  ${PROJECT_SOURCE_DIR}/src)
++
++target_compile_options(ninfer_xpu_core PUBLIC -fsycl)
++target_link_options(ninfer_xpu_core PUBLIC -fsycl)
++target_link_libraries(ninfer_xpu_core PUBLIC OpenCL::OpenCL)
++
++add_executable(ninfer_xpu_smoke smoke.cpp)
++target_compile_options(ninfer_xpu_smoke PRIVATE -fsycl)
++target_link_options(ninfer_xpu_smoke PRIVATE -fsycl)
++target_link_libraries(ninfer_xpu_smoke PRIVATE ninfer_xpu_core)
++
++add_executable(ninfer_xpu_math_test math_test.cpp)
++target_compile_options(ninfer_xpu_math_test PRIVATE -fsycl)
++target_link_options(ninfer_xpu_math_test PRIVATE -fsycl)
++target_link_libraries(ninfer_xpu_math_test PRIVATE ninfer_xpu_core)
++
++add_executable(ninfer_xpu_q4_test q4_test.cpp)
++target_compile_options(ninfer_xpu_q4_test PRIVATE -fsycl)
++target_link_options(ninfer_xpu_q4_test PRIVATE -fsycl)
++target_link_libraries(ninfer_xpu_q4_test PRIVATE ninfer_xpu_core)
++
++add_executable(ninfer_xpu_q4_bench q4_bench.cpp)
++target_compile_options(ninfer_xpu_q4_bench PRIVATE -fsycl)
++target_link_options(ninfer_xpu_q4_bench PRIVATE -fsycl)
++target_link_libraries(ninfer_xpu_q4_bench PRIVATE ninfer_xpu_core)
++
++add_executable(ninfer_xpu_q4_stream_bench q4_stream_bench.cpp)
++target_compile_options(ninfer_xpu_q4_stream_bench PRIVATE -fsycl)
++target_link_options(ninfer_xpu_q4_stream_bench PRIVATE -fsycl)
++target_link_libraries(ninfer_xpu_q4_stream_bench PRIVATE ninfer_xpu_core)
++
++add_executable(ninfer_xpu_mem_read_bench mem_read_bench.cpp)
++target_compile_options(ninfer_xpu_mem_read_bench PRIVATE -fsycl)
++target_link_options(ninfer_xpu_mem_read_bench PRIVATE -fsycl)
++target_link_libraries(ninfer_xpu_mem_read_bench PRIVATE ninfer_xpu_core)
++
++add_executable(ninfer_xpu_q5_test q5_test.cpp)
++target_compile_options(ninfer_xpu_q5_test PRIVATE -fsycl)
++target_link_options(ninfer_xpu_q5_test PRIVATE -fsycl)
++target_link_libraries(ninfer_xpu_q5_test PRIVATE ninfer_xpu_core)
++
++add_executable(ninfer_xpu_q5_stream_bench q5_stream_bench.cpp)
++target_compile_options(ninfer_xpu_q5_stream_bench PRIVATE -fsycl)
++target_link_options(ninfer_xpu_q5_stream_bench PRIVATE -fsycl)
++target_link_libraries(ninfer_xpu_q5_stream_bench PRIVATE ninfer_xpu_core)
++
++add_executable(ninfer_xpu_w8_stream_bench w8_stream_bench.cpp)
++target_compile_options(ninfer_xpu_w8_stream_bench PRIVATE -fsycl)
++target_link_options(ninfer_xpu_w8_stream_bench PRIVATE -fsycl)
++target_link_libraries(ninfer_xpu_w8_stream_bench PRIVATE ninfer_xpu_core)
++
++add_executable(ninfer_xpu_conv_test conv_test.cpp)
++target_compile_options(ninfer_xpu_conv_test PRIVATE -fsycl)
++target_link_options(ninfer_xpu_conv_test PRIVATE -fsycl)
++target_link_libraries(ninfer_xpu_conv_test PRIVATE ninfer_xpu_core)
++
++add_executable(ninfer_xpu_gdn_proj_test gdn_proj_test.cpp)
++target_compile_options(ninfer_xpu_gdn_proj_test PRIVATE -fsycl)
++target_link_options(ninfer_xpu_gdn_proj_test PRIVATE -fsycl)
++target_link_libraries(ninfer_xpu_gdn_proj_test PRIVATE ninfer_xpu_core)
++
++add_executable(ninfer_xpu_gdn_gating_test gdn_gating_test.cpp)
++target_compile_options(ninfer_xpu_gdn_gating_test PRIVATE -fsycl)
++target_link_options(ninfer_xpu_gdn_gating_test PRIVATE -fsycl)
++target_link_libraries(ninfer_xpu_gdn_gating_test PRIVATE ninfer_xpu_core)
++
++add_executable(ninfer_xpu_gdn_recur_test gdn_recur_test.cpp)
++target_compile_options(ninfer_xpu_gdn_recur_test PRIVATE -fsycl)
++target_link_options(ninfer_xpu_gdn_recur_test PRIVATE -fsycl)
++target_link_libraries(ninfer_xpu_gdn_recur_test PRIVATE ninfer_xpu_core)
++
++add_executable(ninfer_xpu_gdn_layer_test gdn_layer_test.cpp)
++target_compile_options(ninfer_xpu_gdn_layer_test PRIVATE -fsycl)
++target_link_options(ninfer_xpu_gdn_layer_test PRIVATE -fsycl)
++target_link_libraries(ninfer_xpu_gdn_layer_test PRIVATE ninfer_xpu_core)
++
++add_executable(ninfer_xpu_attn_proj_test attn_proj_test.cpp)
++target_compile_options(ninfer_xpu_attn_proj_test PRIVATE -fsycl)
++target_link_options(ninfer_xpu_attn_proj_test PRIVATE -fsycl)
++target_link_libraries(ninfer_xpu_attn_proj_test PRIVATE ninfer_xpu_core)
++
++add_executable(ninfer_xpu_attention_test attention_test.cpp)
++target_compile_options(ninfer_xpu_attention_test PRIVATE -fsycl)
++target_link_options(ninfer_xpu_attention_test PRIVATE -fsycl)
++target_link_libraries(ninfer_xpu_attention_test PRIVATE ninfer_xpu_core)
++
++add_executable(ninfer_xpu_attention_layer_test attention_layer_test.cpp)
++target_compile_options(ninfer_xpu_attention_layer_test PRIVATE -fsycl)
++target_link_options(ninfer_xpu_attention_layer_test PRIVATE -fsycl)
++target_link_libraries(ninfer_xpu_attention_layer_test PRIVATE ninfer_xpu_core)
++
++add_executable(ninfer_xpu_qwen38_runner qwen38_runner.cpp)
++target_compile_options(ninfer_xpu_qwen38_runner PRIVATE -fsycl)
++target_link_options(ninfer_xpu_qwen38_runner PRIVATE -fsycl)
++target_link_libraries(ninfer_xpu_qwen38_runner PRIVATE ninfer_xpu_core)
++
++add_executable(ninfer_xpu_gptq4_test gptq4_test.cpp)
++target_compile_options(ninfer_xpu_gptq4_test PRIVATE -fsycl)
++target_link_options(ninfer_xpu_gptq4_test PRIVATE -fsycl)
++target_link_libraries(ninfer_xpu_gptq4_test PRIVATE ninfer_xpu_core)
+diff --git a/src/xpu/device_xpu.cpp b/src/xpu/device_xpu.cpp
+new file mode 100644
+index 00000000..03dc6771
+--- /dev/null
++++ b/src/xpu/device_xpu.cpp
+@@ -0,0 +1,57 @@
++#include "device_xpu.h"
++
++#include <CL/cl.h>
++#include <CL/cl_ext.h>
++#include <stdexcept>
++#include <sstream>
++
++namespace ninfer::xpu {
++namespace {
++
++PciAddress query_pci(const sycl::device& d) {
++    if (d.get_backend() != sycl::backend::opencl)
++        throw std::runtime_error("XPU backend currently requires OpenCL");
++    auto native = sycl::get_native<sycl::backend::opencl>(d);
++    cl_device_pci_bus_info_khr info{};
++    auto rc = clGetDeviceInfo(native, CL_DEVICE_PCI_BUS_INFO_KHR,
++                              sizeof(info), &info, nullptr);
++    if (rc != CL_SUCCESS)
++        throw std::runtime_error("OpenCL PCI query failed");
++    return {info.pci_domain, info.pci_bus,
++            info.pci_device, info.pci_function};
++}
++
++bool same_pci(const PciAddress& a, const PciAddress& b) {
++    return a.domain == b.domain && a.bus == b.bus &&
++           a.device == b.device && a.function == b.function;
++}
++sycl::device find_device(PciAddress target) {
++    for (const auto& d : sycl::device::get_devices(sycl::info::device_type::gpu)) {
++        if (d.get_backend() != sycl::backend::opencl) continue;
++        if (same_pci(query_pci(d), target)) return d;
++    }
++    std::ostringstream os;
++    os << "No OpenCL GPU at PCI " << std::hex
++       << target.domain << ':' << target.bus << ':'
++       << target.device << '.' << target.function;
++    throw std::runtime_error(os.str());
++}
++
++} // namespace
++
++DeviceContext::DeviceContext(PciAddress target)
++    : device_(find_device(target)),
++      queue_(device_, sycl::property::queue::in_order{}), pci_(query_pci(device_)) {}
++
++std::size_t DeviceContext::total_vram() const {
++    return device_.get_info<sycl::info::device::global_mem_size>();
++}
++
++std::string DeviceContext::name() const {
++    return device_.get_info<sycl::info::device::name>();
++}
++void DeviceContext::synchronize() {
++    queue_.wait_and_throw();
++}
++
++} // namespace ninfer::xpu
+diff --git a/src/xpu/device_xpu.h b/src/xpu/device_xpu.h
+new file mode 100644
+index 00000000..38ff6e2f
+--- /dev/null
++++ b/src/xpu/device_xpu.h
+@@ -0,0 +1,33 @@
++#pragma once
++
++#include <sycl/sycl.hpp>
++#include <cstddef>
++#include <cstdint>
++#include <string>
++
++namespace ninfer::xpu {
++
++struct PciAddress {
++    std::uint32_t domain = 0;
++    std::uint32_t bus = 0;
++    std::uint32_t device = 0;
++    std::uint32_t function = 0;
++};
++
++class DeviceContext {
++public:
++    explicit DeviceContext(PciAddress target);
++
++    sycl::queue& queue() noexcept { return queue_; }
++    const sycl::device& device() const noexcept { return device_; }
++    std::size_t total_vram() const;
++    std::string name() const;
++    PciAddress pci() const noexcept { return pci_; }
++    void synchronize();
++private:
++    sycl::device device_;
++    sycl::queue queue_;
++    PciAddress pci_{};
++};
++
++} // namespace ninfer::xpu
+diff --git a/src/xpu/smoke.cpp b/src/xpu/smoke.cpp
+new file mode 100644
+index 00000000..a213194a
+--- /dev/null
++++ b/src/xpu/smoke.cpp
+@@ -0,0 +1,49 @@
++#include "device_xpu.h"
++#include "arena_xpu.h"
++#include "core/tensor.h"
++#include "ops_xpu.h"
++#include <iostream>
++
++int main() {
++    using namespace ninfer::xpu;
++    DeviceContext ctx({0, 0x0e, 0, 0});
++    std::cout << "device=" << ctx.name() << "\n";
++    auto p = ctx.pci();
++    std::cout << "pci=" << std::hex << p.domain << ':' << p.bus
++              << ':' << p.device << '.' << p.function << std::dec << "\n";
++    std::cout << "vram=" << ctx.total_vram() << "\n";
++
++    int* data = sycl::malloc_device<int>(4, ctx.queue());
++    if (!data) return 2;
++    ctx.queue().parallel_for(sycl::range<1>(4), [=](sycl::id<1> i) {
++        data[i] = static_cast<int>(i[0]) * 9 + 3;
++    });
++    int host[4]{};
++    ctx.queue().memcpy(host, data, sizeof(host)).wait();
++    sycl::free(data, ctx.queue());
++    std::cout << "verify=" << host[0] << ',' << host[3] << "\n";
++    DeviceArena arena(ctx, 4096);
++    auto a = arena.alloc_bytes(257, 256);
++    auto b = arena.alloc_bytes(511, 256);
++    std::cout << "arena_used=" << arena.used() << " a=" << a.bytes << " b=" << b.bytes << "\n";
++    auto tstore = arena.alloc_bytes(2 * 64, 256);
++    ninfer::Tensor t(tstore.data, ninfer::DType::BF16, {8, 8});
++    std::cout << "tensor_numel=" << t.numel() << " tensor_bytes=" << t.bytes()
++              << " contiguous=" << t.is_contiguous() << "\n";
++
++    using bf16 = sycl::ext::oneapi::bfloat16;
++    DeviceArena op_arena(ctx, 4096);
++    auto dspan = op_arena.alloc_bytes(sizeof(bf16) * 4, 256);
++    auto sspan = op_arena.alloc_bytes(sizeof(bf16) * 4, 256);
++    ninfer::Tensor dst(dspan.data, ninfer::DType::BF16, {4});
++    ninfer::Tensor src(sspan.data, ninfer::DType::BF16, {4});
++    bf16 hd[4] = {bf16(1.0f), bf16(2.0f), bf16(3.0f), bf16(4.0f)};
++    bf16 hs[4] = {bf16(0.5f), bf16(1.0f), bf16(1.5f), bf16(2.0f)};
++    ctx.queue().memcpy(dst.data, hd, sizeof(hd)).wait();
++    ctx.queue().memcpy(src.data, hs, sizeof(hs)).wait();
++    ninfer::xpu::ops::residual_add(ctx, dst, src);
++    ctx.synchronize();
++    ctx.queue().memcpy(hd, dst.data, sizeof(hd)).wait();
++    std::cout << "residual=" << float(hd[0]) << ',' << float(hd[3]) << "\n";
++    return (host[0] == 3 && host[3] == 30 && t.numel() == 64 && t.bytes() == 128 && float(hd[0]) == 1.5f && float(hd[3]) == 6.0f) ? 0 : 3;
++}
+diff --git a/src/xpu/arena_xpu.cpp b/src/xpu/arena_xpu.cpp
+new file mode 100644
+index 00000000..f5196c19
+--- /dev/null
++++ b/src/xpu/arena_xpu.cpp
+@@ -0,0 +1,87 @@
++#include "arena_xpu.h"
++
++#include <algorithm>
++#include <limits>
++#include <stdexcept>
++#include <utility>
++
++namespace ninfer::xpu {
++namespace {
++
++std::size_t align_up(std::size_t value, std::size_t align) {
++    if (align == 0 || (align & (align - 1)) != 0)
++        throw std::invalid_argument("alignment must be power of two");
++    if (value > std::numeric_limits<std::size_t>::max() - (align - 1))
++        throw std::overflow_error("alignment overflow");
++    return (value + align - 1) & ~(align - 1);
++}
++
++void require_range(std::size_t size, std::size_t offset,
++                   std::size_t count) {
++    if (offset > size || count > size - offset)
++        throw std::out_of_range("device buffer range exceeded");
++}
++
++} // namespace
++
++DeviceBuffer::DeviceBuffer(DeviceContext& ctx, std::size_t bytes)
++    : ctx_(&ctx), bytes_(bytes) {
++    if (bytes_ == 0) return;
++    data_ = sycl::malloc_device(bytes_, ctx_->queue());
++    if (!data_) throw std::bad_alloc();
++}
++
++DeviceBuffer::~DeviceBuffer() {
++    if (data_ && ctx_) sycl::free(data_, ctx_->queue());
++}
++
++DeviceBuffer::DeviceBuffer(DeviceBuffer&& other) noexcept
++    : ctx_(std::exchange(other.ctx_, nullptr)),
++      data_(std::exchange(other.data_, nullptr)),
++      bytes_(std::exchange(other.bytes_, 0)) {}
++
++DeviceBuffer& DeviceBuffer::operator=(DeviceBuffer&& other) noexcept {
++    if (this == &other) return *this;
++    if (data_ && ctx_) sycl::free(data_, ctx_->queue());
++    ctx_ = std::exchange(other.ctx_, nullptr);
++    data_ = std::exchange(other.data_, nullptr);
++    bytes_ = std::exchange(other.bytes_, 0);
++    return *this;
++}
++
++void DeviceBuffer::fill(std::uint8_t value) {
++    if (bytes_ == 0) return;
++    ctx_->queue().memset(data_, value, bytes_).wait();
++}
++void DeviceBuffer::copy_from_host(const void* src, std::size_t count,
++                                  std::size_t offset) {
++    require_range(bytes_, offset, count);
++    if (count == 0) return;
++    auto* dst = static_cast<std::uint8_t*>(data_) + offset;
++    ctx_->queue().memcpy(dst, src, count).wait();
++}
++
++void DeviceBuffer::copy_to_host(void* dst, std::size_t count,
++                                std::size_t offset) const {
++    require_range(bytes_, offset, count);
++    if (count == 0) return;
++    auto* src = static_cast<const std::uint8_t*>(data_) + offset;
++    ctx_->queue().memcpy(dst, src, count).wait();
++}
++
++DeviceArena::DeviceArena(DeviceContext& ctx, std::size_t capacity)
++    : storage_(ctx, capacity) {
++    if (capacity == 0) throw std::invalid_argument("arena capacity must be nonzero");
++}
++
++DeviceSpan DeviceArena::alloc_bytes(std::size_t bytes, std::size_t align) {
++    if (bytes == 0) throw std::invalid_argument("arena allocation must be nonzero");
++    const auto begin = align_up(offset_, align);
++    if (begin > storage_.size() || bytes > storage_.size() - begin)
++        throw std::bad_alloc();
++    offset_ = begin + bytes;
++    auto* ptr = static_cast<std::uint8_t*>(storage_.data()) + begin;
++    return {ptr, bytes};
++}
++
++} // namespace ninfer::xpu
+diff --git a/src/xpu/arena_xpu.h b/src/xpu/arena_xpu.h
+new file mode 100644
+index 00000000..b572f063
+--- /dev/null
++++ b/src/xpu/arena_xpu.h
+@@ -0,0 +1,51 @@
++#pragma once
++
++#include "device_xpu.h"
++#include <cstddef>
++#include <cstdint>
++#include <span>
++
++namespace ninfer::xpu {
++
++struct DeviceSpan {
++    void* data = nullptr;
++    std::size_t bytes = 0;
++};
++
++class DeviceBuffer {
++public:
++    DeviceBuffer(DeviceContext& ctx, std::size_t bytes);
++    ~DeviceBuffer();
++    DeviceBuffer(const DeviceBuffer&) = delete;
++    DeviceBuffer& operator=(const DeviceBuffer&) = delete;
++    DeviceBuffer(DeviceBuffer&&) noexcept;
++    DeviceBuffer& operator=(DeviceBuffer&&) noexcept;
++
++    void fill(std::uint8_t value);
++    void copy_from_host(const void* src, std::size_t count,
++                        std::size_t offset = 0);
++    void copy_to_host(void* dst, std::size_t count,
++                      std::size_t offset = 0) const;
++    void* data() const noexcept { return data_; }
++    std::size_t size() const noexcept { return bytes_; }
++
++private:
++    DeviceContext* ctx_ = nullptr;
++    void* data_ = nullptr;
++    std::size_t bytes_ = 0;
++};
++
++class DeviceArena {
++public:
++    DeviceArena(DeviceContext& ctx, std::size_t capacity);
++    DeviceSpan alloc_bytes(std::size_t bytes, std::size_t align = 256);
++    void reset() noexcept { offset_ = 0; }
++    std::size_t used() const noexcept { return offset_; }
++    std::size_t capacity() const noexcept { return storage_.size(); }
++
++private:
++    DeviceBuffer storage_;
++    std::size_t offset_ = 0;
++};
++
++} // namespace ninfer::xpu
+diff --git a/src/xpu/artifact_xpu.cpp b/src/xpu/artifact_xpu.cpp
+new file mode 100644
+index 00000000..9a3f9859
+--- /dev/null
++++ b/src/xpu/artifact_xpu.cpp
+@@ -0,0 +1,116 @@
++#include "artifact_xpu.h"
++#include <sys/mman.h>
++#include <sys/stat.h>
++#include <fcntl.h>
++#include <unistd.h>
++#include <algorithm>
++#include <fstream>
++#include <sstream>
++#include <stdexcept>
++
++namespace ninfer::xpu {
++namespace {
++std::size_t align_up(std::size_t v,std::size_t a){return (v+a-1)/a*a;}
++std::vector<std::int32_t> parse_shape(const std::string& s){
++    std::vector<std::int32_t> out; std::stringstream ss(s); std::string x;
++    while(std::getline(ss,x,',')) out.push_back(std::stoi(x));
++    return out;
++}
++std::vector<std::string> split_tab(const std::string& s){
++    std::vector<std::string> out; std::stringstream ss(s); std::string x;
++    while(std::getline(ss,x,'\t')) out.push_back(x); return out;
++}
++} // namespace
++
++XpuTextArtifact::XpuTextArtifact(DeviceContext& ctx,const std::string& artifact_path,
++                                 const std::string& manifest_path){
++    std::ifstream mf(manifest_path); if(!mf) throw std::runtime_error("cannot open XPU manifest");
++    std::string line; std::size_t capacity=0;
++    while(std::getline(mf,line)){
++        if(line.empty()||line[0]=='#') continue;
++        auto f=split_tab(line); if(f.size()!=6) throw std::runtime_error("invalid XPU manifest line");
++        XpuArtifactRecord r; r.name=f[0];r.format=f[1];r.layout=f[2];r.shape=parse_shape(f[3]);
++        r.file_offset=std::stoull(f[4]);r.bytes=std::stoull(f[5]);
++        capacity=align_up(capacity,256)+static_cast<std::size_t>(r.bytes);
++        records_.emplace(r.name,std::move(r));
++    }
++    if(records_.empty()) throw std::runtime_error("XPU manifest contains no tensors");
++    fd_=::open(artifact_path.c_str(),O_RDONLY); if(fd_<0) throw std::runtime_error("cannot open artifact");
++    struct stat st{}; if(::fstat(fd_,&st)!=0) throw std::runtime_error("artifact fstat failed");
++    file_bytes_=static_cast<std::size_t>(st.st_size);
++    mapping_=::mmap(nullptr,file_bytes_,PROT_READ,MAP_PRIVATE,fd_,0);
++    if(mapping_==MAP_FAILED){mapping_=nullptr;throw std::runtime_error("artifact mmap failed");}
++#ifdef MADV_SEQUENTIAL
++    (void)::madvise(mapping_,file_bytes_,MADV_SEQUENTIAL);
++#endif
++    arena_=std::make_unique<DeviceArena>(ctx,capacity+256);
++    auto* base=static_cast<const std::byte*>(mapping_);
++    for(auto& [name,r]:records_){
++        if(r.file_offset+r.bytes>file_bytes_) throw std::runtime_error("artifact tensor outside file");
++        r.storage=arena_->alloc_bytes(static_cast<std::size_t>(r.bytes),256);
++        ctx.queue().memcpy(r.storage.data,base+r.file_offset,static_cast<std::size_t>(r.bytes));
++    }
++    ctx.synchronize(); device_bytes_=arena_->used();
++}
++
++XpuTextArtifact::~XpuTextArtifact(){
++    arena_.reset();
++    if(mapping_) ::munmap(mapping_,file_bytes_);
++    if(fd_>=0) ::close(fd_);
++}
++
++const XpuArtifactRecord& XpuTextArtifact::record(const std::string& name) const{
++    auto it=records_.find(name);if(it==records_.end())throw std::out_of_range("missing artifact tensor: "+name);
++    return it->second;
++}
++
++Tensor XpuTextArtifact::tensor(const std::string& name,DType dtype,
++                               std::initializer_list<std::int32_t> internal_shape) const{
++    const auto& r=record(name);return Tensor(r.storage.data,dtype,internal_shape);
++}
++Weight XpuTextArtifact::weight(const std::string& name) const{
++    const auto& r=record(name); if(r.shape.size()!=2) throw std::invalid_argument("weight must be rank 2: "+name);
++    const int n=r.shape[0],k=r.shape[1]; Weight w{};
++    w.payload=r.storage.data;w.payload_bytes=r.bytes;w.qdata=r.storage.data;w.n=n;w.k=k;w.ndim=2;
++    w.shape[0]=n;w.shape[1]=k;w.padded_shape[0]=n;
++    if(r.format=="BF16"){
++        w.qtype=QType::BF16_CTRL;w.layout=QuantLayout::Contiguous;w.padded_shape[1]=k;return w;
++    }
++    if(r.format=="GPTQ4_G128_ROW"){
++        if((k%128)!=0) throw std::invalid_argument("GPTQ4_G128_ROW shape alignment");
++        const std::size_t qw_bytes=static_cast<std::size_t>(n)*(k/8)*sizeof(std::int32_t);
++        const std::size_t soff=align_up(qw_bytes,256);
++        const std::size_t sc_bytes=static_cast<std::size_t>(n)*(k/128)*sizeof(std::uint16_t);
++        if(soff+sc_bytes>r.bytes) throw std::invalid_argument("GPTQ4_G128_ROW record truncated");
++        w.qtype=QType::GPTQ4_G128_ROW; w.layout=QuantLayout::RowSplit; w.group=w.group_size=128;
++        w.scale_dtype=DType::FP16; w.scales=static_cast<const std::byte*>(r.storage.data)+soff;
++        w.padded_shape[1]=k; return w;
++    }
++    if(r.format=="GPTQ4_G128"){
++        if((k%128)!=0||(n%8)!=0) throw std::invalid_argument("GPTQ4_G128 shape alignment");
++        const std::size_t qw_bytes=static_cast<std::size_t>(k/8)*n*sizeof(std::int32_t);
++        const std::size_t zoff=align_up(qw_bytes,256);
++        const std::size_t qz_bytes=static_cast<std::size_t>(k/128)*(n/8)*sizeof(std::int32_t);
++        const std::size_t soff=align_up(zoff+qz_bytes,256);
++        const std::size_t sc_bytes=static_cast<std::size_t>(k/128)*n*sizeof(std::uint16_t);
++        if(soff+sc_bytes>r.bytes) throw std::invalid_argument("GPTQ4_G128 record truncated");
++        w.qtype=QType::GPTQ4_G128; w.layout=QuantLayout::RowSplit; w.group=w.group_size=128;
++        w.scale_dtype=DType::FP16; w.qzeros=static_cast<const std::byte*>(r.storage.data)+zoff;
++        w.scales=static_cast<const std::byte*>(r.storage.data)+soff; w.padded_shape[1]=k;
++        return w;
++    }
++    int group=0; QType qt{};
++    if(r.format=="Q4G64_F16S"){group=64;qt=QType::Q4G64_F16S;}
++    else if(r.format=="W8G32_F16S"){group=32;qt=QType::W8G32_F16S;}
++    else throw std::invalid_argument("unsupported XPU text weight format: "+r.format);
++    const int kpad=static_cast<int>(align_up(static_cast<std::size_t>(k),128));
++    const std::size_t groups=static_cast<std::size_t>(kpad/group);
++    const std::size_t low_per_group=(group==32)?32:32;
++    const std::size_t base_bytes=static_cast<std::size_t>(n)*groups*low_per_group;
++    const std::size_t scale_offset=align_up(base_bytes,256);
++    w.qtype=qt;w.layout=QuantLayout::RowSplit;w.group=w.group_size=group;w.scale_dtype=DType::FP16;
++    w.scales=static_cast<const std::byte*>(r.storage.data)+scale_offset;
++    w.padded_shape[1]=kpad;w.scale_ne[0]=static_cast<std::int32_t>(groups);w.scale_ne[1]=n;
++    return w;
++}
++} // namespace ninfer::xpu
+diff --git a/src/xpu/artifact_xpu.h b/src/xpu/artifact_xpu.h
+new file mode 100644
+index 00000000..cd937dda
+--- /dev/null
++++ b/src/xpu/artifact_xpu.h
+@@ -0,0 +1,37 @@
++#pragma once
++#include "arena_xpu.h"
++#include "core/tensor.h"
++#include <cstdint>
++#include <initializer_list>
++#include <memory>
++#include <string>
++#include <unordered_map>
++#include <vector>
++
++namespace ninfer::xpu {
++struct XpuArtifactRecord {
++    std::string name, format, layout;
++    std::vector<std::int32_t> shape;
++    std::uint64_t file_offset=0, bytes=0;
++    DeviceSpan storage{};
++};
++
++class XpuTextArtifact {
++public:
++    XpuTextArtifact(DeviceContext& ctx, const std::string& artifact_path,
++                    const std::string& manifest_path);
++    ~XpuTextArtifact();
++    XpuTextArtifact(const XpuTextArtifact&) = delete;
++    XpuTextArtifact& operator=(const XpuTextArtifact&) = delete;
++
++    const XpuArtifactRecord& record(const std::string& name) const;
++    Tensor tensor(const std::string& name, DType dtype,
++                  std::initializer_list<std::int32_t> internal_shape) const;
++    Weight weight(const std::string& name) const;
++    std::size_t device_bytes() const noexcept { return device_bytes_; }
++private:
++    int fd_=-1; void* mapping_=nullptr; std::size_t file_bytes_=0, device_bytes_=0;
++    std::unique_ptr<DeviceArena> arena_;
++    std::unordered_map<std::string,XpuArtifactRecord> records_;
++};
++} // namespace ninfer::xpu
+diff --git a/src/xpu/attention_decode_xpu.cpp b/src/xpu/attention_decode_xpu.cpp
+new file mode 100644
+index 00000000..8d3950f1
+--- /dev/null
++++ b/src/xpu/attention_decode_xpu.cpp
+@@ -0,0 +1,67 @@
++#include "ops_xpu.h"
++
++#include <sycl/sycl.hpp>
++#include <limits>
++#include <stdexcept>
++
++namespace ninfer::xpu::ops {
++
++void causal_attention_decode(DeviceContext& ctx,const Tensor& q,const Tensor& k,
++                             const Tensor& v,int position,float scale,
++                             Tensor& kc,Tensor& vc,Tensor& scores,Tensor& out){
++    if(q.dtype!=DType::BF16||k.dtype!=DType::BF16||v.dtype!=DType::BF16||out.dtype!=DType::BF16||
++       kc.dtype!=DType::BF16||vc.dtype!=DType::BF16||scores.dtype!=DType::FP32)
++        throw std::invalid_argument("attention decode: dtype mismatch");
++    const int cap=kc.ne[2];
++    if(q.ne[0]!=256||q.ne[1]!=24||q.ne[2]!=1||k.ne[0]!=256||k.ne[1]!=4||k.ne[2]!=1||
++       v.ne[0]!=256||v.ne[1]!=4||v.ne[2]!=1||out.ne[0]!=256||out.ne[1]!=24||out.ne[2]!=1||
++       kc.ne[0]!=256||kc.ne[1]!=4||vc.ne[0]!=256||vc.ne[1]!=4||vc.ne[2]!=cap||
++       scores.ne[0]!=cap||scores.ne[1]!=24||position<0||position>=cap)
++        throw std::invalid_argument("attention decode: shape/position mismatch");
++    using bf16=sycl::ext::oneapi::bfloat16;
++    auto* qp=static_cast<const bf16*>(q.data); auto* kp=static_cast<const bf16*>(k.data);
++    auto* vp=static_cast<const bf16*>(v.data); auto* kcp=static_cast<bf16*>(kc.data);
++    auto* vcp=static_cast<bf16*>(vc.data); auto* sp=static_cast<float*>(scores.data);
++    auto* op=static_cast<bf16*>(out.data); const int len=position+1;
++    ctx.queue().parallel_for(sycl::range<1>(1024),[=](sycl::id<1> id){
++        const int idx=int(id[0]); const int h=idx/256,d=idx%256;
++        kcp[(std::int64_t(position)*4+h)*256+d]=kp[h*256+d];
++        vcp[(std::int64_t(position)*4+h)*256+d]=vp[h*256+d];
++    });
++    ctx.queue().parallel_for(sycl::range<1>(std::size_t(24)*len),[=](sycl::id<1> id){
++        const int qh=int(id[0]/len),t=int(id[0]%len),kh=qh/6; float dot=0.0f;
++        const std::int64_t kb=(std::int64_t(t)*4+kh)*256;
++        const std::int64_t qb=std::int64_t(qh)*256;
++        for(int d=0;d<256;++d)dot+=float(qp[qb+d])*float(kcp[kb+d]);
++        sp[std::int64_t(qh)*cap+t]=dot*scale;
++    });
++    ctx.queue().submit([&](sycl::handler& cgh){
++        sycl::local_accessor<float,1> maxbuf(sycl::range<1>(1),cgh);
++        sycl::local_accessor<float,1> sumbuf(sycl::range<1>(1),cgh);
++        cgh.parallel_for(sycl::nd_range<1>(24*256,256),[=](sycl::nd_item<1> it){
++            const int qh=int(it.get_group(0)),lane=int(it.get_local_id(0));
++            float pm=-std::numeric_limits<float>::infinity();
++            for(int t=lane;t<len;t+=256)pm=sycl::fmax(pm,sp[std::int64_t(qh)*cap+t]);
++            const float mx=sycl::reduce_over_group(it.get_group(),pm,sycl::maximum<float>());
++            if(lane==0)maxbuf[0]=mx;
++            it.barrier(sycl::access::fence_space::local_space);
++            float ps=0.0f;
++            for(int t=lane;t<len;t+=256)ps+=sycl::exp(sp[std::int64_t(qh)*cap+t]-maxbuf[0]);
++            const float sm=sycl::reduce_over_group(it.get_group(),ps,sycl::plus<float>());
++            if(lane==0)sumbuf[0]=sm;
++            it.barrier(sycl::access::fence_space::local_space);
++            for(int t=lane;t<len;t+=256)
++                sp[std::int64_t(qh)*cap+t]=sycl::exp(sp[std::int64_t(qh)*cap+t]-maxbuf[0])/sumbuf[0];
++        });
++    });
++    ctx.queue().parallel_for(sycl::range<1>(24*256),[=](sycl::id<1> id){
++        const int qh=int(id[0]/256),d=int(id[0]%256),kh=qh/6; float sum=0.0f;
++        for(int t=0;t<len;++t){
++            const float a=sp[std::int64_t(qh)*cap+t];
++            sum+=a*float(vcp[(std::int64_t(t)*4+kh)*256+d]);
++        }
++        op[qh*256+d]=bf16(sum);
++    });
++}
++
++} // namespace ninfer::xpu::ops
+diff --git a/src/xpu/attention_layer_test.cpp b/src/xpu/attention_layer_test.cpp
+new file mode 100644
+index 00000000..e14827be
+--- /dev/null
++++ b/src/xpu/attention_layer_test.cpp
+@@ -0,0 +1,82 @@
++#include "arena_xpu.h"
++#include "ops_xpu.h"
++#include <sycl/sycl.hpp>
++#include <cmath>
++#include <cstdint>
++#include <iostream>
++#include <vector>
++using bf16=sycl::ext::oneapi::bfloat16;
++using namespace ninfer; using namespace ninfer::xpu;
++
++static Weight make_q4(DeviceContext& ctx,DeviceArena& a,int n,int k,unsigned seed){
++    const int pg=k/64;const std::size_t cb=std::size_t(n)*pg*32,sc=std::size_t(n)*pg;
++    auto cs=a.alloc_bytes(cb),ss=a.alloc_bytes(sc*sizeof(sycl::half));
++    auto* cp=static_cast<std::uint8_t*>(cs.data);auto* sp=static_cast<sycl::half*>(ss.data);
++    ctx.queue().parallel_for(sycl::range<1>(cb),[=](sycl::id<1> id){std::uint32_t v=std::uint32_t(id[0])+seed;v^=v>>16;v*=0x7feb352du;cp[id]=std::uint8_t(v);});
++    ctx.queue().parallel_for(sycl::range<1>(sc),[=](sycl::id<1> id){sp[id]=sycl::half(0.001953125f*float(1+(id[0]&3)));});
++    Weight w{};w.qtype=QType::Q4G64_F16S;w.layout=QuantLayout::RowSplit;w.qdata=cs.data;w.scales=ss.data;
++    w.n=n;w.k=k;w.group=w.group_size=64;w.scale_dtype=DType::FP16;w.padded_shape[0]=n;w.padded_shape[1]=k;return w;
++}
++static Weight make_w8(DeviceContext& ctx,DeviceArena& a,int n,int k,unsigned seed){
++    const int pg=k/32;const std::size_t cb=std::size_t(n)*k,sc=std::size_t(n)*pg;
++    auto cs=a.alloc_bytes(cb),ss=a.alloc_bytes(sc*sizeof(sycl::half));
++    auto* cp=static_cast<std::int8_t*>(cs.data);auto* sp=static_cast<sycl::half*>(ss.data);
++    ctx.queue().parallel_for(sycl::range<1>(cb),[=](sycl::id<1> id){std::uint32_t v=std::uint32_t(id[0])+seed;v^=v>>15;v*=0x846ca68bu;cp[id]=std::int8_t((v>>24)&0x7f);});
++    ctx.queue().parallel_for(sycl::range<1>(sc),[=](sycl::id<1> id){sp[id]=sycl::half(0.000244140625f*float(1+(id[0]&3)));});
++    Weight w{};w.qtype=QType::W8G32_F16S;w.layout=QuantLayout::RowSplit;w.qdata=cs.data;w.scales=ss.data;
++    w.n=n;w.k=k;w.group=w.group_size=32;w.scale_dtype=DType::FP16;w.padded_shape[0]=n;w.padded_shape[1]=k;return w;
++}
++
++int main(){
++    constexpr int H=5120,I=17408,CAP=16;
++    DeviceContext ctx({0,0x0e,0,0});DeviceArena a(ctx,512ULL*1024*1024);
++    Weight qk=make_q4(ctx,a,7168,H,11),gv=make_w8(ctx,a,7168,H,12);
++    Weight outp=make_w8(ctx,a,H,6144,13),gateup=make_q4(ctx,a,2*I,H,14),down=make_w8(ctx,a,H,I,15);
++    auto rs=a.alloc_bytes(H*sizeof(bf16)),ins=a.alloc_bytes(H*sizeof(bf16)),pns=a.alloc_bytes(H*sizeof(bf16));
++    auto qns=a.alloc_bytes(256*sizeof(bf16)),kns=a.alloc_bytes(256*sizeof(bf16));
++    auto hs=a.alloc_bytes(H*sizeof(bf16)),qs=a.alloc_bytes(6144*sizeof(bf16)),gs=a.alloc_bytes(6144*sizeof(bf16));
++    auto ks=a.alloc_bytes(1024*sizeof(bf16)),vs=a.alloc_bytes(1024*sizeof(bf16));
++    auto qnos=a.alloc_bytes(6144*sizeof(bf16)),knos=a.alloc_bytes(1024*sizeof(bf16));
++    auto kcs=a.alloc_bytes(256ULL*4*CAP*sizeof(bf16)),vcs=a.alloc_bytes(256ULL*4*CAP*sizeof(bf16));
++    auto scs=a.alloc_bytes(CAP*24ULL*sizeof(float)),ats=a.alloc_bytes(6144*sizeof(bf16));
++    auto ds=a.alloc_bytes(H*sizeof(bf16)),mhs=a.alloc_bytes(H*sizeof(bf16));
++    auto gus=a.alloc_bytes(2ULL*I*sizeof(bf16)),acts=a.alloc_bytes(I*sizeof(bf16)),d2s=a.alloc_bytes(H*sizeof(bf16));
++    auto poss=a.alloc_bytes(sizeof(std::int32_t));
++    Tensor r(rs.data,DType::BF16,{H,1}),inorm(ins.data,DType::BF16,{H}),pnorm(pns.data,DType::BF16,{H});
++    Tensor qnorm(qns.data,DType::BF16,{256}),knorm(kns.data,DType::BF16,{256}),h(hs.data,DType::BF16,{H,1});
++    Tensor q(qs.data,DType::BF16,{6144,1}),gate(gs.data,DType::BF16,{6144,1});
++    Tensor k(ks.data,DType::BF16,{1024,1}),v(vs.data,DType::BF16,{1024,1});
++    Tensor qn(qnos.data,DType::BF16,{256,24,1}),kn(knos.data,DType::BF16,{256,4,1});
++    Tensor kc(kcs.data,DType::BF16,{256,4,CAP}),vc(vcs.data,DType::BF16,{256,4,CAP});
++    Tensor scores(scs.data,DType::FP32,{CAP,24}),attn(ats.data,DType::BF16,{256,24,1});
++    Tensor delta(ds.data,DType::BF16,{H,1}),mlph(mhs.data,DType::BF16,{H,1});
++    Tensor gu(gus.data,DType::BF16,{2*I,1}),act(acts.data,DType::BF16,{I,1}),delta2(d2s.data,DType::BF16,{H,1});
++    Tensor pos(poss.data,DType::I32,{1});
++    auto* rp=static_cast<bf16*>(r.data);auto* inp=static_cast<bf16*>(inorm.data);auto* pnp=static_cast<bf16*>(pnorm.data);
++    auto* qnp=static_cast<bf16*>(qnorm.data);auto* knp=static_cast<bf16*>(knorm.data);
++    ctx.queue().parallel_for(sycl::range<1>(H),[=](sycl::id<1> id){rp[id]=bf16((int(id[0]%31)-15)*0.015625f);inp[id]=bf16(0.01f);pnp[id]=bf16(0.01f);});
++    ctx.queue().parallel_for(sycl::range<1>(256),[=](sycl::id<1> id){qnp[id]=bf16(0.01f);knp[id]=bf16(0.01f);});
++    ctx.queue().parallel_for(sycl::range<1>(256ULL*4*CAP),[=](sycl::id<1> id){
++        static_cast<bf16*>(kc.data)[id]=bf16(0.0f);static_cast<bf16*>(vc.data)[id]=bf16(0.0f);
++    });
++    const std::int32_t zero=0;ctx.queue().memcpy(pos.data,&zero,sizeof(zero));ctx.synchronize();
++    ops::rmsnorm(ctx,r,inorm,1.0e-6f,true,h);
++    ops::attn_input_proj_q4_w8_decode(ctx,h,qk,gv,q,gate,k,v);
++    Tensor qview=q.view({256,24,1}),kview=k.view({256,4,1});
++    ops::rmsnorm(ctx,qview,qnorm,1.0e-6f,true,qn);
++    ops::rmsnorm(ctx,kview,knorm,1.0e-6f,true,kn);
++    ops::rope(ctx,pos,64,1.0e7f,qn,kn);
++    ops::causal_attention_decode(ctx,qn,kn,v.view({256,4,1}),0,0.0625f,kc,vc,scores,attn);
++    ops::sigmoid_mul(ctx,gate.view({256,24,1}),attn);
++    ops::w8_gemv_word32(ctx,attn.view({6144,1}),outp,delta);
++    ops::residual_add(ctx,r,delta);
++    ops::rmsnorm(ctx,r,pnorm,1.0e-6f,true,mlph);
++    ops::q4_gemv_word32(ctx,mlph,gateup,gu);
++    ops::silu_mul(ctx,gu.slice(0,0,I),gu.slice(0,I,I),act);
++    ops::w8_gemv_word32(ctx,act,down,delta2);ops::residual_add(ctx,r,delta2);ctx.synchronize();
++    std::vector<bf16> hr(H);ctx.queue().memcpy(hr.data(),r.data,H*sizeof(bf16)).wait();
++    bool finite=true;double checksum=0.0;for(auto x:hr){const float f=float(x);finite=finite&&std::isfinite(f);checksum+=f;}
++    std::cout<<"attention_layer_finite="<<(finite?1:0)<<" checksum="<<checksum<<" arena_used="<<a.used()<<"\n";
++    std::cout<<(finite?"attention_layer_test=PASS":"attention_layer_test=FAIL")<<"\n";
++    return finite?0:1;
++}
+diff --git a/src/xpu/attention_test.cpp b/src/xpu/attention_test.cpp
+new file mode 100644
+index 00000000..2dc7a2c6
+--- /dev/null
++++ b/src/xpu/attention_test.cpp
+@@ -0,0 +1,57 @@
++#include "arena_xpu.h"
++#include "ops_xpu.h"
++#include <sycl/sycl.hpp>
++#include <algorithm>
++#include <cmath>
++#include <iostream>
++#include <vector>
++using bf16=sycl::ext::oneapi::bfloat16;
++int main(){
++    using namespace ninfer; using namespace ninfer::xpu;
++    constexpr int D=256,QH=24,KH=4,CAP=16,POS=7;
++    DeviceContext ctx({0,0x0e,0,0}); DeviceArena arena(ctx,4ULL*1024*1024);
++    auto qs=arena.alloc_bytes(D*QH*sizeof(bf16)); auto ks=arena.alloc_bytes(D*KH*sizeof(bf16));
++    auto vs=arena.alloc_bytes(D*KH*sizeof(bf16)); auto kcs=arena.alloc_bytes(D*KH*CAP*sizeof(bf16));
++    auto vcs=arena.alloc_bytes(D*KH*CAP*sizeof(bf16)); auto ss=arena.alloc_bytes(CAP*QH*sizeof(float));
++    auto os=arena.alloc_bytes(D*QH*sizeof(bf16));
++    Tensor q(qs.data,DType::BF16,{D,QH,1}),k(ks.data,DType::BF16,{D,KH,1}),v(vs.data,DType::BF16,{D,KH,1});
++    Tensor kc(kcs.data,DType::BF16,{D,KH,CAP}),vc(vcs.data,DType::BF16,{D,KH,CAP});
++    Tensor scores(ss.data,DType::FP32,{CAP,QH}),out(os.data,DType::BF16,{D,QH,1});
++    std::vector<bf16> hq(D*QH),hk(D*KH),hv(D*KH),hkc(D*KH*CAP),hvc(D*KH*CAP),hout(D*QH);
++    for(int h=0;h<QH;++h)for(int d=0;d<D;++d)hq[h*D+d]=bf16(((h+2*d)%31-15)*0.015625f);
++    for(int h=0;h<KH;++h)for(int d=0;d<D;++d){
++        hk[h*D+d]=bf16(((3*h+d)%29-14)*0.015625f);
++        hv[h*D+d]=bf16(((5*h+2*d)%27-13)*0.015625f);
++    }
++    for(int t=0;t<CAP;++t)for(int h=0;h<KH;++h)for(int d=0;d<D;++d){
++        const auto idx=(t*KH+h)*D+d;
++        hkc[idx]=bf16(((t+h+d)%23-11)*0.0078125f);
++        hvc[idx]=bf16(((2*t+h+3*d)%25-12)*0.0078125f);
++    }
++    ctx.queue().memcpy(q.data,hq.data(),hq.size()*sizeof(bf16));
++    ctx.queue().memcpy(k.data,hk.data(),hk.size()*sizeof(bf16));
++    ctx.queue().memcpy(v.data,hv.data(),hv.size()*sizeof(bf16));
++    ctx.queue().memcpy(kc.data,hkc.data(),hkc.size()*sizeof(bf16));
++    ctx.queue().memcpy(vc.data,hvc.data(),hvc.size()*sizeof(bf16));ctx.synchronize();
++    std::vector<bf16> ref(D*QH); constexpr float scale=0.0625f;
++    for(int h=0;h<KH;++h)for(int d=0;d<D;++d){
++        hkc[(POS*KH+h)*D+d]=hk[h*D+d]; hvc[(POS*KH+h)*D+d]=hv[h*D+d];
++    }
++    for(int qh=0;qh<QH;++qh){
++        const int kh=qh/6; float logits[POS+1]; float mx=-1.0e30f;
++        for(int t=0;t<=POS;++t){
++            float dot=0.0f;for(int d=0;d<D;++d)dot+=float(hq[qh*D+d])*float(hkc[(t*KH+kh)*D+d]);
++            logits[t]=dot*scale;mx=std::max(mx,logits[t]);
++        }
++        float sm=0.0f;for(int t=0;t<=POS;++t)sm+=std::exp(logits[t]-mx);
++        for(int d=0;d<D;++d){
++            float y=0.0f;for(int t=0;t<=POS;++t)y+=std::exp(logits[t]-mx)/sm*float(hvc[(t*KH+kh)*D+d]);
++            ref[qh*D+d]=bf16(y);
++        }
++    }
++    ops::causal_attention_decode(ctx,q,k,v,POS,scale,kc,vc,scores,out);ctx.synchronize();
++    ctx.queue().memcpy(hout.data(),out.data,hout.size()*sizeof(bf16)).wait();
++    float err=0.0f;for(std::size_t i=0;i<hout.size();++i)err=std::max(err,std::fabs(float(hout[i])-float(ref[i])));
++    std::cout<<"attention_out_err="<<err<<"\n"<<(err<=0.002f?"attention_test=PASS":"attention_test=FAIL")<<"\n";
++    return err<=0.002f?0:1;
++}
+diff --git a/src/xpu/attn_input_proj_xpu.cpp b/src/xpu/attn_input_proj_xpu.cpp
+new file mode 100644
+index 00000000..aa462f6f
+--- /dev/null
++++ b/src/xpu/attn_input_proj_xpu.cpp
+@@ -0,0 +1,69 @@
++#include "ops_xpu.h"
++
++#include <sycl/sycl.hpp>
++#include <cstdint>
++#include <stdexcept>
++
++namespace ninfer::xpu::ops {
++namespace {
++using bf16=sycl::ext::oneapi::bfloat16;
++constexpr int QROWS=6144, KVROWS=1024, PROWS=7168;
++constexpr std::size_t LOCAL=64;
++
++void validate_attn(const Tensor& x,const Weight& qk,const Weight& gv,
++                   const Tensor& q,const Tensor& gate,const Tensor& k,const Tensor& v){
++    if(x.dtype!=DType::BF16||q.dtype!=DType::BF16||gate.dtype!=DType::BF16||
++       k.dtype!=DType::BF16||v.dtype!=DType::BF16
