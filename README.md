@@ -4,6 +4,14 @@ Experimental Intel XPU/SYCL port of [Neroued/ninfer](https://github.com/Neroued/
 
 This repository is a public engineering handoff, not a production-ready inference engine. The CUDA/NVIDIA upstream remains dramatically faster today. The goal here is to give Intel/XPU contributors a working baseline they can profile, replace, and improve rather than starting from zero.
 
+## Related dual-B70 vLLM recipe
+
+For the separate production-style **2× Intel Arc Pro B70** deployment of **Qwen3.8-27B official FP8** using **vLLM XPU, TP=2, R187 whole-graph, MTP4, and 64K context**, see:
+
+- [Qwen3.8-27B FP8 on 2× Intel Arc Pro B70 — R187 MTP4 recipe](docs/qwen38-27b-fp8-r187-mtp4-dual-b70.md)
+
+That recipe records the pinned model/runtime, launch procedure, effective ~3.0K–3.5K tok/s prompt processing, ~80–82 tok/s single-user generation, and the fresh 1/2/4-user throughput checks. It credits and links the upstream `b70-optimization-lab` work from which the R187 stack is derived.
+
 ## Current result
 
 Test hardware: 1x Intel Arc Pro B70 32 GB, PCIe, single-GPU TP=1.
